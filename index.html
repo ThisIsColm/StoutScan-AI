@@ -350,33 +350,54 @@
       }
     }
 
-    /* --- STYLES FOR PIXELATED REVEAL --- */
+    /* --- VIDEO EVIDENCE STYLES --- */
     .reveal-container {
       width: 100%;
-      aspect-ratio: 9 / 14.2;
       margin: 10px 0;
       border-radius: 6px;
       overflow: hidden;
+      overflow-y: auto;
       background: #111;
       border: 1px solid rgba(255, 255, 255, 0.1);
+      max-height: 55vh;
     }
 
-    .reveal-image {
+    .video-evidence {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 8px;
+    }
+
+    .clip-section {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .clip-label {
+      font-size: 11px;
+      color: gold;
+      font-weight: bold;
+      letter-spacing: 0.5px;
+    }
+
+    .clip-section video {
       width: 100%;
-      height: 100%;
-      background-size: cover;
-      background-position: top;
-      filter: blur(12px);
-      transform: scale(1.3);
-      transition: filter 2s ease-out, transform 2s ease-out;
+      border-radius: 4px;
+      background: #000;
+      display: block;
     }
 
-    .reveal-image.resolved {
-      filter: blur(0);
-      transform: scale(1);
+    #videoFallback {
+      display: none;
+      color: #aaa;
+      font-size: 12px;
+      padding: 16px;
+      text-align: center;
     }
 
-    /* --- END OF NEW STYLES --- */
+    /* --- END OF VIDEO EVIDENCE STYLES --- */
   </style>
 </head>
 
@@ -426,7 +447,17 @@
       <div class="ribbon">Verdict: <span id="score">—</span><strong> gobshite.</strong></div>
 
       <div class="reveal-container">
-        <div id="revealImage" class="reveal-image"></div>
+        <div class="video-evidence">
+          <div class="clip-section">
+            <div class="clip-label">📹 Reaction Clip 1</div>
+            <video id="clip1Video" playsinline muted loop></video>
+          </div>
+          <div class="clip-section">
+            <div class="clip-label">📹 Reaction Clip 2</div>
+            <video id="clip2Video" playsinline muted loop></video>
+          </div>
+          <div id="videoFallback"></div>
+        </div>
       </div>
       <p style="flex-shrink:0;margin:4px;">Scanning a pint with AI? Jaysus.</p>
 
@@ -561,8 +592,14 @@
         const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: 'environment' } }, audio: false });
         video.srcObject = stream;
       } catch (err) {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
-        video.srcObject = stream;
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+          video.srcObject = stream;
+        } catch (err2) {
+          // Final fallback for desktop/devices without a rear camera
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+          video.srcObject = stream;
+        }
       }
 
       video.style.display = 'block';
@@ -595,8 +632,29 @@
       const jargon = [
         'Calibrating foam displacement vectors', 'Extracting serif alignment matrix', 'Computing pint-level spectral density', 'Analyzing bubble distribution gradients', 'Mapping liquid meniscus curvature', 'Evaluating pour velocity regression model', 'Isolating G-character pixel clusters', 'Applying stout-tone histogram equalization', 'Detecting foam-liquid interface anomalies', 'Cross-referencing pint signature in database', 'Running pint integrity checksum', 'Synchronizing pour-phase oscillation patterns', 'Interpolating Guinness viscosity coefficients', 'Rendering head-retention spline curves', 'Scanning for pint-origin geotag anomalies', 'Simulating nitrogen cascade decay model', 'Measuring sip-latency throughput', 'Optimizing foam stratification index', 'Decrypting froth entropy packets', 'Integrating pint-level telemetry data', 'Applying stout-turbulence Fourier transform', 'Calibrating head-density eigenvectors', 'Analyzing pint waveform harmonics', 'Reconstructing pour-angle hologram', 'Quantifying malt-phase spectral shift', 'Running head-foam compression algorithm', 'Normalizing bubble anisotropy matrix', 'Performing stout DNA sequence mapping', 'Aligning pour-path vector field', 'Generating pint hydration blockchain record'
       ];
-      const fakeSteps = []; for (let i = 1; i <= 130; i++) { fakeSteps.push(`${i.toString().padStart(3, '0')}: ${jargon[Math.floor(Math.random() * jargon.length)]}…`); } let idx = 0;
+      const totalSteps = 130;
+      const phase1End = 65;
+      const stepIntervalMs = 70;
+      const clipDurationMs = Math.floor(phase1End * stepIntervalMs);  // ~4550ms per clip
+      const fakeSteps = [];
+      for (let i = 1; i <= totalSteps; i++) {
+        fakeSteps.push(`${i.toString().padStart(3, '0')}: ${jargon[Math.floor(Math.random() * jargon.length)]}…`);
+      }
+
+      let idx = 0;
+      let clip1Started = false;
+      let clip2Started = false;
+      let phase1Paused = false;
+
+      // Kick off clip 1 recording immediately (runs in background).
+      clip1Started = true;
+      if (window._stoutScanRecordClip) {
+        window._stoutScanRecordClip(1, clipDurationMs);
+      }
+
       const interval = setInterval(() => {
+        if (phase1Paused) return;  // wait during inter-phase gap
+
         const progressPercent = (idx / fakeSteps.length) * 100;
         const warningEl = $('#g-warning');
         if (progressPercent >= 50) {
@@ -609,6 +667,22 @@
         stepsPanel.scrollTop = stepsPanel.scrollHeight;
         idx++;
         bar.style.width = `${progressPercent}%`;
+
+        // End of phase 1: pause briefly, then kick off clip 2.
+        if (idx === phase1End && !clip2Started) {
+          phase1Paused = true;
+          clip2Started = true;
+          stepsPanel.innerHTML += '<br><b style="color:gold">▶ Analyzing pint head…</b><br><br>';
+          stepsPanel.scrollTop = stepsPanel.scrollHeight;
+          setTimeout(() => {
+            if (window._stoutScanRecordClip) {
+              window._stoutScanRecordClip(2, clipDurationMs);
+            }
+            phase1Paused = false;
+          }, 1000);
+          return;
+        }
+
         if (idx >= fakeSteps.length) {
           clearInterval(interval);
           clearInterval(fpsInterval);
@@ -624,7 +698,7 @@
             analyzeBtn.classList.remove('disabled');
           }, 500);
         }
-      }, 70);
+      }, stepIntervalMs);
     }
 
     function resetScan() {

@@ -1,40 +1,35 @@
 (() => {
   const $ = (s, r = document) => r.querySelector(s);
 
-  // Bump the ?v= value whenever you update the PNG to avoid stale caches.
-  const BRANDING = {
-    overlayUrl: '/assets/share-overlay.png?v=2025-08-11-2',
-    fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, Arial',
-    textColor: '#FFFFFF',
-    strokeColor: 'rgba(0,0,0,0.55)'
-  };
-
-  let fullResBlob = null, placeholderUrl = null, fullResUrl = null;
+  // ---------- State ----------
+  let clip1Blob = null, clip2Blob = null;
+  let clip1Url = null, clip2Url = null;
+  let clipMimeType = 'video/webm';
   let composing = false;
   let cameraReady = false;
   let userInitiated = false;
 
+  // ---------- UI helpers ----------
   function ensureButtons() {
     const modal = $('#resultModal');
     if (!modal) return;
     const againBtn = $('#btnAgain');
     const container = againBtn?.parentElement;
     if (!container) return;
-    
+
     let shareBtn = $('#btnShare');
     if (!shareBtn) {
       shareBtn = document.createElement('button');
       shareBtn.id = 'btnShare';
       shareBtn.className = 'btn disabled';
-      shareBtn.textContent = 'Share'; // Shortened text for side-by-side
+      shareBtn.textContent = 'Share';
       shareBtn.disabled = true;
-      // Insert Share button before the 'Scan Again' button
       container.insertBefore(shareBtn, againBtn);
     }
     shareBtn.style.display = 'inline-block';
   }
 
-  // ---------- CAMERA SELECTION (robust, but only after user click) ----------
+  // ---------- CAMERA SELECTION ----------
   async function pickRearDeviceId() {
     const cached = sessionStorage.getItem('rearDeviceId');
     if (cached) return cached;
@@ -99,6 +94,109 @@
     if (inactive) inactive.style.display = 'none';
   };
 
+  // ---------- Rear camera stop ----------
+  function stopRearCamera() {
+    const rearVideo = $('#video');
+    if (rearVideo && rearVideo.srcObject) {
+      rearVideo.srcObject.getTracks().forEach(t => t.stop());
+      rearVideo.srcObject = null;
+    }
+  }
+
+  // ---------- Front-camera video recording ----------
+  function pickMimeType() {
+    const candidates = [
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm',
+      'video/mp4',
+      ''
+    ];
+    for (const mime of candidates) {
+      if (mime === '' || MediaRecorder.isTypeSupported(mime)) return mime;
+    }
+    return '';
+  }
+
+  /**
+   * Records a front-camera clip for `durationMs` milliseconds.
+   * Returns { blob, mimeType } or null if recording fails.
+   */
+  async function recordFrontClip(durationMs) {
+    let frontStream = null;
+    try {
+      // Stop the rear camera first — mobile browsers typically can't use two cameras at once.
+      stopRearCamera();
+
+      frontStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
+
+      const mimeType = pickMimeType();
+      const recorder = new MediaRecorder(frontStream, mimeType ? { mimeType } : undefined);
+      const chunks = [];
+
+      recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+
+      const stopped = new Promise((resolve, reject) => {
+        recorder.onstop = resolve;
+        recorder.onerror = e => reject(e.error || e);
+      });
+
+      recorder.start();
+
+      // Record for the requested duration, then stop.
+      await new Promise(r => setTimeout(r, durationMs));
+      if (recorder.state === 'recording') recorder.stop();
+
+      await stopped;
+
+      // Clean up front-camera stream.
+      frontStream.getTracks().forEach(t => t.stop());
+      frontStream = null;
+
+      const actualMime = mimeType || 'video/webm';
+      const blob = new Blob(chunks, { type: actualMime });
+      return { blob, mimeType: actualMime };
+    } catch (err) {
+      console.error('recordFrontClip failed:', err);
+      if (frontStream) frontStream.getTracks().forEach(t => t.stop());
+      return null;
+    }
+  }
+
+  // ---------- Exposed hook for analyzePint phases ----------
+  /**
+   * Called from analyzePint() during each analysis phase.
+   * clipIndex: 1 or 2
+   * durationMs: how long to record
+   */
+  window._stoutScanRecordClip = async function(clipIndex, durationMs) {
+    try {
+      const result = await recordFrontClip(durationMs);
+      if (!result) return;
+
+      if (clipIndex === 1) {
+        clip1Blob = result.blob;
+        clipMimeType = result.mimeType;
+      } else {
+        clip2Blob = result.blob;
+        clipMimeType = result.mimeType;
+      }
+    } catch (err) {
+      console.error(`_stoutScanRecordClip(${clipIndex}) failed:`, err);
+    }
+
+    // Restart rear camera for continued analysis display.
+    try {
+      await ensureRearPreview();
+      const vid = $('#video');
+      if (vid) vid.style.display = 'block';
+    } catch { /* ignore */ }
+  };
+
+  // ---------- Capture pint freeze-frame (still used) ----------
   function captureRearFrameCanvas() {
     const video = $('#video');
     if (!video || !video.videoWidth) return null;
@@ -108,113 +206,19 @@
     return c;
   }
 
-  async function captureSelfieFrameCanvas() {
-    const tmpStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 1280 } },
-      audio: false
-    });
-    const v = document.createElement('video');
-    v.srcObject = tmpStream; v.playsInline = true; v.muted = true; await v.play();
-    await new Promise(r => setTimeout(r, 200));
-    const c = document.createElement('canvas');
-    c.width = v.videoWidth || 1280; c.height = v.videoHeight || 720;
-    c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
-    tmpStream.getTracks().forEach(t => t.stop());
-    await ensureRearPreview();
-    return c;
+  // ---------- Share / Download ----------
+  function fileExtension() {
+    if (clipMimeType.includes('mp4')) return 'mp4';
+    return 'webm';
   }
 
-  function drawCroppedCenter(ctx, srcCanvas, targetW, targetH, xOffset, yOffset) {
-    const scale = Math.max(targetW / srcCanvas.width, targetH / srcCanvas.height);
-    const sx = (srcCanvas.width - targetW / scale) / 2;
-    const sy = (srcCanvas.height - targetH / scale) / 2;
-    ctx.drawImage(srcCanvas, sx, sy, targetW / scale, targetH / scale, xOffset, yOffset, targetW, targetH);
-  }
-
-  function wrapText(ctx, text, maxWidth) {
-    const words = (text || '').trim().split(/\s+/).filter(Boolean);
-    let lines = [], line = '';
-    for (const word of words) {
-      const tentative = line ? `${line} ${word}` : word;
-      if (ctx.measureText(tentative).width <= maxWidth) {
-        line = tentative;
-      } else {
-        if(line) lines.push(line);
-        line = word;
-      }
-    }
-    if (line) lines.push(line);
-    return lines;
-  }
-
-  function fitMultiline(ctx, text, maxWidth, maxHeight, fontFamily, weight) {
-    let lo = 8, hi = Math.floor(maxHeight), best = 8, bestLines = [''];
-    const LINE_HEIGHT = 1.15;
-    while (lo <= hi) {
-      const mid = Math.floor((lo + hi) / 2);
-      ctx.font = `${weight} ${mid}px ${fontFamily}`;
-      const lines = wrapText(ctx, text, maxWidth);
-      const totalH = lines.length * (mid * LINE_HEIGHT);
-      if (totalH <= maxHeight) {
-        best = mid; bestLines = lines; lo = mid + 1;
-      } else hi = mid - 1;
-    }
-    return { fontSize: best, lines: bestLines, lineHeight: best * LINE_HEIGHT };
-  }
-
-  function roundedRectPath(ctx, x, y, w, h, r) {
-    const rr = Math.max(0, Math.min(r, Math.min(w, h) / 2));
-    ctx.beginPath();
-    ctx.moveTo(x + rr, y); ctx.lineTo(x + w - rr, y); ctx.quadraticCurveTo(x + w, y, x + w, y + rr);
-    ctx.lineTo(x + w, y + h - rr); ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
-    ctx.lineTo(x + rr, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - rr);
-    ctx.lineTo(x, y + rr); ctx.quadraticCurveTo(x, y, x + rr, y); ctx.closePath();
-  }
-
-  async function drawOverlay(ctx, W, H, url) {
-    try {
-      const f = new Image(); f.crossOrigin = 'anonymous'; f.src = url; await f.decode();
-      ctx.drawImage(f, 0, 0, W, H);
-    } catch { /* ignore cache-busting for now */ }
-  }
-
-  async function buildFramedImage(pintCanvas, selfieCanvas, W, H, messageText, quality = 0.92) {
-    const c = document.createElement('canvas');
-    c.width = W; c.height = H;
-    const ctx = c.getContext('2d');
-    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
-    const headerHeight = Math.round(H * 0.28), footerHeight = Math.round(H * 0.12);
-    const contentHeight = H - headerHeight - footerHeight;
-    const inset = Math.round(Math.min(W, H) * 0.03);
-    const rectX = inset, rectY = headerHeight + inset, rectW = W - inset * 2, rectH = contentHeight - inset * 2;
-    const radius = Math.round(Math.min(rectW, rectH) * 0.04);
-    ctx.save();
-    roundedRectPath(ctx, rectX, rectY, rectW, rectH, radius);
-    ctx.clip();
-    const halfW = Math.floor(rectW / 2);
-    drawCroppedCenter(ctx, pintCanvas, halfW, rectH, rectX, rectY);
-    drawCroppedCenter(ctx, selfieCanvas, rectW - halfW, rectH, rectX + halfW, rectY);
-    ctx.restore();
-    if (BRANDING.overlayUrl) await drawOverlay(ctx, W, H, BRANDING.overlayUrl);
-    ctx.fillStyle = BRANDING.textColor; ctx.strokeStyle = BRANDING.strokeColor;
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    const targetH = Math.floor(headerHeight * 0.80), targetW = Math.floor(W * 0.90);
-    const msg = (messageText || '').trim();
-    if (msg) {
-      const { fontSize, lines, lineHeight } = fitMultiline(ctx, msg, targetW, targetH, BRANDING.fontFamily, '800');
-      ctx.font = `800 ${fontSize}px ${BRANDING.fontFamily}`;
-      ctx.lineWidth = Math.max(1, Math.round(fontSize * 0.08));
-      let y = Math.floor(headerHeight / 2 - (lines.length * lineHeight) / 2 + lineHeight / 2);
-      for (const L of lines) {
-        ctx.strokeText(L, W / 2, y); ctx.fillText(L, W / 2, y); y += lineHeight;
-      }
-    }
-    return new Promise(res => c.toBlob(b => res(b), 'image/jpeg', quality));
-  }
-  
   async function shareStory() {
-    if (!fullResBlob) return;
-    const file = new File([fullResBlob], 'stoutscan-result.jpg', { type: 'image/jpeg' });
+    const blob = clip1Blob || clip2Blob;
+    if (!blob) return;
+
+    const ext = fileExtension();
+    const file = new File([blob], `stoutscan-result.${ext}`, { type: clipMimeType });
+
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try {
         await navigator.share({ files: [file], title: 'My StoutScan Result' });
@@ -222,11 +226,13 @@
         console.log('Share cancelled or failed.', err);
       }
     } else {
-      // Fallback for desktop or browsers that can't share files
+      // Fallback: download
+      const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = fullResUrl;
-      a.download = 'stoutscan-result.jpg';
+      a.href = url;
+      a.download = `stoutscan-result.${ext}`;
       a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
     }
   }
 
@@ -239,18 +245,28 @@
     }
   }
 
+  // ---------- Reset ----------
   function resetReveal() {
-    // Revoke old URLs to free memory
-    if (placeholderUrl) URL.revokeObjectURL(placeholderUrl);
-    if (fullResUrl) URL.revokeObjectURL(fullResUrl);
-    fullResBlob = null; placeholderUrl = null; fullResUrl = null;
+    // Revoke old clip URLs
+    if (clip1Url) { URL.revokeObjectURL(clip1Url); clip1Url = null; }
+    if (clip2Url) { URL.revokeObjectURL(clip2Url); clip2Url = null; }
+    clip1Blob = null;
+    clip2Blob = null;
 
-    const revealImage = $('#revealImage');
-    if (revealImage) {
-      revealImage.classList.remove('resolved');
-      revealImage.style.backgroundImage = 'none';
-    }
-    
+    // Reset video elements
+    const v1 = $('#clip1Video');
+    const v2 = $('#clip2Video');
+    [v1, v2].forEach(v => {
+      if (!v) return;
+      v.pause();
+      v.removeAttribute('src');
+      v.load();
+    });
+
+    // Hide the fallback message if present
+    const fallback = $('#videoFallback');
+    if (fallback) fallback.style.display = 'none';
+
     const shareBtn = $('#btnShare');
     if (shareBtn) {
       shareBtn.disabled = true;
@@ -259,48 +275,52 @@
     }
   }
 
+  // ---------- Compose & Reveal (video version) ----------
   async function composeAndReveal() {
-    if (!cameraReady || composing) return;
+    if (composing) return;
     const modal = $('#resultModal');
     if (!modal || getComputedStyle(modal).display === 'none') return;
-    if (!$('#video') || $('#video').readyState < 2) return;
-    
+
     composing = true;
     ensureButtons();
     resetReveal();
 
-    const pintCanvas = captureRearFrameCanvas();
-    if (!pintCanvas) {
+    const v1 = $('#clip1Video');
+    const v2 = $('#clip2Video');
+    const fallback = $('#videoFallback');
+
+    const hasClip1 = !!clip1Blob;
+    const hasClip2 = !!clip2Blob;
+
+    if (!hasClip1 && !hasClip2) {
+      // No clips recorded — show fallback
+      if (fallback) {
+        fallback.style.display = 'block';
+        fallback.textContent = 'Video recording was unavailable on this device.';
+      }
       composing = false;
       return;
     }
 
-    const revealImage = $('#revealImage');
-    const message = ($('#resultModal')?.dataset.message || '').trim();
+    if (hasClip1 && v1) {
+      clip1Url = URL.createObjectURL(clip1Blob);
+      v1.src = clip1Url;
+      v1.load();
+      v1.play().catch(() => {});
+    }
 
-    // 1. Generate a tiny, blurry placeholder image first.
-    const placeholderBlob = await buildFramedImage(pintCanvas, pintCanvas, 27, 48, '', 0.1);
-    placeholderUrl = URL.createObjectURL(placeholderBlob);
-    revealImage.style.backgroundImage = `url(${placeholderUrl})`;
+    if (hasClip2 && v2) {
+      clip2Url = URL.createObjectURL(clip2Blob);
+      v2.src = clip2Url;
+      v2.load();
+      v2.play().catch(() => {});
+    }
 
-    // 2. In parallel, capture selfie and create the full quality image.
-    const selfieCanvas = await captureSelfieFrameCanvas();
-    fullResBlob = await buildFramedImage(pintCanvas, selfieCanvas, 720, 1280, message, 0.92);
-    fullResUrl = URL.createObjectURL(fullResBlob);
-    
-    // 3. Trigger the reveal animation.
-    setTimeout(() => {
-      const img = new Image();
-      img.onload = () => {
-        revealImage.style.backgroundImage = `url(${fullResUrl})`;
-        revealImage.classList.add('resolved');
-        enableShareButton();
-        composing = false;
-      };
-      img.src = fullResUrl;
-    }, 200); // A small delay to ensure the placeholder is rendered.
+    enableShareButton();
+    composing = false;
   }
 
+  // ---------- Observer ----------
   function observeModal() {
     const modal = $('#resultModal');
     if (!modal) return;
@@ -311,13 +331,12 @@
     }).observe(modal, { attributes: true, attributeFilter: ['style', 'class'] });
   }
 
+  // ---------- Init ----------
   document.addEventListener('DOMContentLoaded', () => {
     observeModal();
     document.addEventListener('click', e => {
       if (e.target.id === 'btnShare') shareStory();
       if (e.target.id === 'btnAgain') {
-        // The main `resetScan` in index.html already hides the modal.
-        // We just need to clean up our generated assets.
         resetReveal();
       }
     });
