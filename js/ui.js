@@ -27,6 +27,9 @@ export function initUIElements() {
     els.processingScreen = $('#processingScreen');
     els.promptOkBtn = $('#promptOkBtn');
     els.targetBox = $('.g-target');
+
+    // Stitched video display
+    els.stitchedVideo = $('#stitchedVideo');
 }
 
 export function setupArElements() {
