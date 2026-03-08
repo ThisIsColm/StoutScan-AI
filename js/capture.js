@@ -16,70 +16,57 @@ export function pickMimeType() {
     return '';
 }
 
-export async function recordFrontClip(durationMs) {
+export async function startFrontRecording() {
     let frontStream = null;
-    try {
-        stopRearCamera();
+    let recorder = null;
 
+    stopRearCamera();
+    if (els.video) els.video.style.display = 'none';
+
+    try {
         frontStream = await navigator.mediaDevices.getUserMedia({
             video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
             audio: false
         });
+    } catch (err) {
+        console.error('startFrontRecording failed:', err);
+        return { stop: () => { }, resultPromise: Promise.resolve(null) };
+    }
 
-        const mimeType = pickMimeType();
-        const recorder = new MediaRecorder(frontStream, mimeType ? { mimeType } : undefined);
-        const chunks = [];
+    const mimeType = pickMimeType();
+    recorder = new MediaRecorder(frontStream, mimeType ? { mimeType } : undefined);
+    const chunks = [];
 
-        recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+    recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
 
-        const stopped = new Promise((resolve, reject) => {
-            recorder.onstop = resolve;
-            recorder.onerror = e => reject(e.error || e);
-        });
+    const stopped = new Promise((resolve, reject) => {
+        recorder.onstop = resolve;
+        recorder.onerror = e => reject(e.error || e);
+    });
 
-        recorder.start();
+    recorder.start();
 
-        await new Promise(r => setTimeout(r, durationMs));
-        if (recorder.state === 'recording') recorder.stop();
-
-        await stopped;
-
+    const resultPromise = stopped.then(() => {
         frontStream.getTracks().forEach(t => t.stop());
-        frontStream = null;
-
         const actualMime = mimeType || 'video/webm';
-        const blob = new Blob(chunks, { type: actualMime });
-        return { blob, mimeType: actualMime };
-    } catch (err) {
-        console.error('recordFrontClip failed:', err);
-        if (frontStream) frontStream.getTracks().forEach(t => t.stop());
+        return { blob: new Blob(chunks, { type: actualMime }), mimeType: actualMime };
+    }).catch(err => {
+        console.error('recorder stopped error:', err);
+        frontStream.getTracks().forEach(t => t.stop());
         return null;
-    }
+    });
+
+    return {
+        stop: () => {
+            if (recorder && recorder.state === 'recording') {
+                recorder.stop();
+            }
+        },
+        resultPromise
+    };
 }
 
-export async function recordClip(clipIndex, durationMs) {
-    try {
-        const result = await recordFrontClip(durationMs);
-        if (!result) return;
-
-        if (clipIndex === 1) {
-            state.clip1Blob = result.blob;
-            state.clipMimeType = result.mimeType;
-        } else {
-            state.clip2Blob = result.blob;
-            state.clipMimeType = result.mimeType;
-        }
-    } catch (err) {
-        console.error(`recordClip(${clipIndex}) failed:`, err);
-    }
-
-    try {
-        await ensureRearPreview();
-        if (els.video) els.video.style.display = 'block';
-    } catch { /* ignore */ }
-}
-
-export function captureRearFrameCanvas() {
+export async function captureRearFrameCanvas() {
     if (!els.video || !els.video.videoWidth) return null;
     const c = document.createElement('canvas');
     c.width = els.video.videoWidth; c.height = els.video.videoHeight;

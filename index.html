@@ -50,6 +50,23 @@
       </div>
     </div>
 
+    <div class="overlay" id="promptScreen"
+      style="display: none; background: rgba(0,0,0,0.85); align-items: center; justify-content: center; z-index: 10; pointer-events: auto;">
+      <div class="card">
+        <h2>Scan the top of the pint</h2>
+        <p>Hold your phone steady above the glass to check the head.</p>
+        <button class="btn accent" id="promptOkBtn">OK, Ready</button>
+      </div>
+    </div>
+
+    <div class="overlay" id="processingScreen"
+      style="display: none; background: rgba(0,0,0,0.85); align-items: center; justify-content: center; z-index: 10; pointer-events: auto;">
+      <div class="card">
+        <h2>Processing...</h2>
+        <p>Getting your results ready. This will just take a moment.</p>
+      </div>
+    </div>
+
     <div class="inactive" id="inactive" style="display: flex;">
       <div class="card">
         <h2>StoutScan AI</h2>

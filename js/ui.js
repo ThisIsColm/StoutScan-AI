@@ -21,6 +21,12 @@ export function initUIElements() {
     els.arCanvas = $('#arCanvas');
     els.chipContainer = $('#chipContainer');
     els.siteFooter = $('#siteFooter');
+
+    // New two-stage flow elements
+    els.promptScreen = $('#promptScreen');
+    els.processingScreen = $('#processingScreen');
+    els.promptOkBtn = $('#promptOkBtn');
+    els.targetBox = $('.g-target');
 }
 
 export function setupArElements() {
